@@ -14,6 +14,12 @@ int main(int argc, char * argv[]) {
             if(strcmp(argv[1], "bootstrap")==0) {
                 int bootstrap();
                 exit(bootstrap());
+            } else if(strcmp(argv[1], "bootstrap_sileo")==0) {
+                int bootstrap_sileo();
+                exit(bootstrap_sileo());
+            } else if(strcmp(argv[1], "bootstrap_zebra")==0) {
+                int bootstrap_zebra();
+                exit(bootstrap_zebra());
             } else if(strcmp(argv[1], "unbootstrap")==0) {
                 int unbootstrap();
                 exit(unbootstrap());

@@ -20,6 +20,7 @@ OSStatus SecCodeCopySigningInformation(SecStaticCodeRef code, SecCSFlags flags, 
 @interface ViewController ()
 @property (weak, nonatomic) IBOutlet UITextView *logView;
 @property (weak, nonatomic) IBOutlet UIButton *bootstraBtn;
+@property (weak, nonatomic) IBOutlet UIButton *bootstrazebraBtn;
 @property (weak, nonatomic) IBOutlet UIButton *unbootstrapBtn;
 @property (weak, nonatomic) IBOutlet UISwitch *opensshState;
 @property (weak, nonatomic) IBOutlet UIButton *appEnablerBtn;
@@ -69,6 +70,8 @@ OSStatus SecCodeCopySigningInformation(SecStaticCodeRef code, SecCSFlags flags, 
     {
         self.bootstraBtn.enabled = NO;
         [self.bootstraBtn setTitle:Localized(@"Bootstrapped") forState:UIControlStateDisabled];
+        self.bootstrazebraBtn.enabled = NO;
+        [self.bootstrazebraBtn setTitle:Localized(@"Bootstrapped") forState:UIControlStateDisabled];
         
         self.respringBtn.enabled = YES;
         self.appEnablerBtn.enabled = YES;
@@ -93,8 +96,11 @@ OSStatus SecCodeCopySigningInformation(SecStaticCodeRef code, SecCSFlags flags, 
     {
         
         self.bootstraBtn.enabled = YES;
-        [self.bootstraBtn setTitle:Localized(@"Bootstrap") forState:UIControlStateNormal];
+        [self.bootstraBtn setTitle:Localized(@"Bootstrap with Sileo") forState:UIControlStateNormal];
+        self.bootstrazebraBtn.enabled = YES;
+        [self.bootstrazebraBtn setTitle:Localized(@"Bootstrap with Zebra") forState:UIControlStateNormal];
 
+        
         self.respringBtn.enabled = NO;
         self.appEnablerBtn.enabled = NO;
         self.rebuildappsBtn.enabled = NO;
@@ -105,8 +111,12 @@ OSStatus SecCodeCopySigningInformation(SecStaticCodeRef code, SecCSFlags flags, 
     else if(NSProcessInfo.processInfo.operatingSystemVersion.majorVersion>=15)
     {
         self.bootstraBtn.enabled = YES;
-        [self.bootstraBtn setTitle:Localized(@"Install") forState:UIControlStateNormal];
+        [self.bootstraBtn setTitle:Localized(@"Install Sileo") forState:UIControlStateNormal];
 
+        self.bootstrazebraBtn.enabled = YES;
+        [self.bootstrazebraBtn setTitle:Localized(@"Install Zebra") forState:UIControlStateNormal];
+
+        
         self.respringBtn.enabled = NO;
         self.appEnablerBtn.enabled = NO;
         self.rebuildappsBtn.enabled = NO;
@@ -116,6 +126,9 @@ OSStatus SecCodeCopySigningInformation(SecStaticCodeRef code, SecCSFlags flags, 
     } else {
         self.bootstraBtn.enabled = NO;
         [self.bootstraBtn setTitle:Localized(@"Unsupported") forState:UIControlStateDisabled];
+        
+        self.bootstrazebraBtn.enabled = NO;
+        [self.bootstrazebraBtn setTitle:Localized(@"Unsupported") forState:UIControlStateDisabled];
 
         self.respringBtn.enabled = NO;
         self.appEnablerBtn.enabled = NO;
@@ -445,6 +458,152 @@ int rebuildIconCache()
     });
 }
 
+- (IBAction)bootstrap_sileo:(id)sender {
+    if(![self checkTSVersion]) {
+        [AppDelegate showMesage:Localized(@"Your trollstore version is too old, Bootstrap only supports trollstore>=2.0") title:Localized(@"Error")];
+        return;
+    }
+    
+    if(spawnRoot([NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"basebin/devtest"], nil, nil, nil) != 0) {
+        [AppDelegate showMesage:Localized(@"Your device does not seem to have developer mode enabled.\n\nPlease enable developer mode in Settings->[Privacy&Security] and reboot your device.") title:Localized(@"Error")];
+        return;
+    }
+    
+    UIImpactFeedbackGenerator* generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleSoft];
+    generator.impactOccurred;
+
+    if(find_jbroot()) //make sure jbroot() function available
+    {
+        if([NSFileManager.defaultManager fileExistsAtPath:jbroot(@"/.installed_dopamine")]) {
+            [AppDelegate showMesage:Localized(@"roothide dopamine has been installed on this device, now install this bootstrap may break it!") title:Localized(@"Error")];
+            return;
+        }
+        
+        if([NSFileManager.defaultManager fileExistsAtPath:jbroot(@"/.bootstrapped")]) {
+            NSString* strappedVersion = [NSString stringWithContentsOfFile:jbroot(@"/.bootstrapped") encoding:NSUTF8StringEncoding error:nil];
+            if(strappedVersion.intValue != BOOTSTRAP_VERSION) {
+                [AppDelegate showMesage:Localized(@"You have installed an old beta version, please disable all app tweaks and reboot the device to uninstall it so that you can install the new version bootstrap.") title:Localized(@"Error")];
+                return;
+            }
+        }
+    }
+    
+    [(UIButton*)sender setEnabled:NO];
+    
+    [AppDelegate showHudMsg:Localized(@"Bootstrapping")];
+    
+    dispatch_async(dispatch_get_global_queue(0, 0), ^{
+        
+        const char* argv[] = {NSBundle.mainBundle.executablePath.fileSystemRepresentation, "bootstrap_sileo", NULL};
+        int status = spawn(argv[0], argv, environ, ^(char* outstr){
+            [AppDelegate addLogText:@(outstr)];
+        }, ^(char* errstr){
+            [AppDelegate addLogText:[NSString stringWithFormat:@"ERR: %s\n",errstr]];
+        });
+        
+        [AppDelegate dismissHud];
+        
+        if(status != 0)
+        {
+            [AppDelegate showMesage:@"" title:[NSString stringWithFormat:@"code(%d)",status]];
+            return;
+        }
+        
+        NSString* log=nil;
+        NSString* err=nil;
+            
+        if([NSUserDefaults.appDefaults boolForKey:@"openssh"] && [NSFileManager.defaultManager fileExistsAtPath:jbroot(@"/usr/libexec/sshd-keygen-wrapper")])
+        {
+            NSString* log=nil;
+            NSString* err=nil;
+             status = spawnRoot(jbroot(@"/basebin/bootstrapd"), @[@"openssh",@"start"], &log, &err);
+            if(status==0)
+                [AppDelegate addLogText:@"openssh launch successful"];
+            else
+                [AppDelegate addLogText:[NSString stringWithFormat:@"openssh launch faild(%d):\n%@\n%@", status, log, err]];
+        }
+        
+        [AppDelegate addLogText:@"respring now..."]; sleep(1);
+        
+         status = spawnBootstrap((char*[]){"/usr/bin/sbreload", NULL}, &log, &err);
+        if(status!=0) [AppDelegate showMesage:[NSString stringWithFormat:@"%@\n\nstderr:\n%@",log,err] title:[NSString stringWithFormat:@"code(%d)",status]];
+        
+    });
+}
+
+- (IBAction)bootstrap_zebra:(id)sender {
+    if(![self checkTSVersion]) {
+        [AppDelegate showMesage:Localized(@"Your trollstore version is too old, Bootstrap only supports trollstore>=2.0") title:Localized(@"Error")];
+        return;
+    }
+    
+    if(spawnRoot([NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"basebin/devtest"], nil, nil, nil) != 0) {
+        [AppDelegate showMesage:Localized(@"Your device does not seem to have developer mode enabled.\n\nPlease enable developer mode in Settings->[Privacy&Security] and reboot your device.") title:Localized(@"Error")];
+        return;
+    }
+    
+    UIImpactFeedbackGenerator* generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleSoft];
+    generator.impactOccurred;
+
+    if(find_jbroot()) //make sure jbroot() function available
+    {
+        if([NSFileManager.defaultManager fileExistsAtPath:jbroot(@"/.installed_dopamine")]) {
+            [AppDelegate showMesage:Localized(@"roothide dopamine has been installed on this device, now install this bootstrap may break it!") title:Localized(@"Error")];
+            return;
+        }
+        
+        if([NSFileManager.defaultManager fileExistsAtPath:jbroot(@"/.bootstrapped")]) {
+            NSString* strappedVersion = [NSString stringWithContentsOfFile:jbroot(@"/.bootstrapped") encoding:NSUTF8StringEncoding error:nil];
+            if(strappedVersion.intValue != BOOTSTRAP_VERSION) {
+                [AppDelegate showMesage:Localized(@"You have installed an old beta version, please disable all app tweaks and reboot the device to uninstall it so that you can install the new version bootstrap.") title:Localized(@"Error")];
+                return;
+            }
+        }
+    }
+    
+    [(UIButton*)sender setEnabled:NO];
+    
+    [AppDelegate showHudMsg:Localized(@"Bootstrapping")];
+    
+    dispatch_async(dispatch_get_global_queue(0, 0), ^{
+        
+        const char* argv[] = {NSBundle.mainBundle.executablePath.fileSystemRepresentation, "bootstrap_zebra", NULL};
+        int status = spawn(argv[0], argv, environ, ^(char* outstr){
+            [AppDelegate addLogText:@(outstr)];
+        }, ^(char* errstr){
+            [AppDelegate addLogText:[NSString stringWithFormat:@"ERR: %s\n",errstr]];
+        });
+        
+        [AppDelegate dismissHud];
+        
+        if(status != 0)
+        {
+            [AppDelegate showMesage:@"" title:[NSString stringWithFormat:@"code(%d)",status]];
+            return;
+        }
+        
+        NSString* log=nil;
+        NSString* err=nil;
+            
+        if([NSUserDefaults.appDefaults boolForKey:@"openssh"] && [NSFileManager.defaultManager fileExistsAtPath:jbroot(@"/usr/libexec/sshd-keygen-wrapper")])
+        {
+            NSString* log=nil;
+            NSString* err=nil;
+             status = spawnRoot(jbroot(@"/basebin/bootstrapd"), @[@"openssh",@"start"], &log, &err);
+            if(status==0)
+                [AppDelegate addLogText:@"openssh launch successful"];
+            else
+                [AppDelegate addLogText:[NSString stringWithFormat:@"openssh launch faild(%d):\n%@\n%@", status, log, err]];
+        }
+        
+        [AppDelegate addLogText:@"respring now..."]; sleep(1);
+        
+         status = spawnBootstrap((char*[]){"/usr/bin/sbreload", NULL}, &log, &err);
+        if(status!=0) [AppDelegate showMesage:[NSString stringWithFormat:@"%@\n\nstderr:\n%@",log,err] title:[NSString stringWithFormat:@"code(%d)",status]];
+        
+    });
+}
+
 - (IBAction)unbootstrap:(id)sender {
 
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:Localized(@"Warnning") message:Localized(@"Are you sure to uninstall bootstrap?\n\nPlease make sure you have disabled tweak for all apps before uninstalling.") preferredStyle:UIAlertControllerStyleAlert];
@@ -461,14 +620,13 @@ int rebuildIconCache()
             [AppDelegate dismissHud];
             
             NSString* msg = (status==0) ? @"bootstrap uninstalled" : [NSString stringWithFormat:@"code(%d)\n%@\n\nstderr:\n%@",status,log,err];
-            
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"" message:msg preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:Localized(@"OK") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
-                exit(0);
-            }]];
-            
-            [AppDelegate showAlert:alert];
-            
+
+             UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"" message:msg preferredStyle:UIAlertControllerStyleAlert];
+             [alert addAction:[UIAlertAction actionWithTitle:Localized(@"OK") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
+                 exit(0);
+             }]];
+
+             [AppDelegate showAlert:alert];
         });
         
     }]];

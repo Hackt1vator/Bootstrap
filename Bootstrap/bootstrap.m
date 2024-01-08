@@ -250,6 +250,200 @@ int InstallBootstrap(NSString* jbroot_path)
     return 0;
 }
 
+int InstallBootstrap_sileo(NSString* jbroot_path)
+{
+    STRAPLOG("install bootstrap...");
+    
+    NSFileManager* fm = NSFileManager.defaultManager;
+    
+    ASSERT(mkdir(jbroot_path.fileSystemRepresentation, 0755) == 0);
+    ASSERT(chown(jbroot_path.fileSystemRepresentation, 0, 0) == 0);
+    
+    NSString* bootstrapZstFile = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:
+                                  [NSString stringWithFormat:@"strapfiles/bootstrap-%d.tar.zst", getCFMajorVersion()]];
+    if(![fm fileExistsAtPath:bootstrapZstFile]) {
+        STRAPLOG("can not find bootstrap file, maybe this version of the app is not for iOS%d", NSProcessInfo.processInfo.operatingSystemVersion.majorVersion);
+        return -1;
+    }
+    
+    NSString* bootstrapTarFile = [NSTemporaryDirectory() stringByAppendingPathComponent:@"bootstrap.tar"];
+    if([fm fileExistsAtPath:bootstrapTarFile])
+        ASSERT([fm removeItemAtPath:bootstrapTarFile error:nil]);
+    
+    ASSERT(decompress_tar_zstd(bootstrapZstFile.fileSystemRepresentation, bootstrapTarFile.fileSystemRepresentation) == 0);
+    
+    NSString* tarPath = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"tar"];
+    ASSERT(spawnRoot(tarPath, @[@"-xpkf", bootstrapTarFile, @"-C", jbroot_path], nil, nil) == 0);
+    
+    STRAPLOG("rebuild boostrap binaries");
+    rebuildSignature(jbroot_path);
+    
+    NSString* jbroot_secondary = [NSString stringWithFormat:@"/var/mobile/Containers/Shared/AppGroup/.jbroot-%016llX", jbrand()];
+    ASSERT(mkdir(jbroot_secondary.fileSystemRepresentation, 0755) == 0);
+    ASSERT(chown(jbroot_secondary.fileSystemRepresentation, 0, 0) == 0);
+    
+    ASSERT([fm moveItemAtPath:jbroot(@"/var") toPath:[jbroot_secondary stringByAppendingPathComponent:@"/var"] error:nil]);
+    ASSERT([fm createSymbolicLinkAtPath:jbroot(@"/var") withDestinationPath:@"private/var" error:nil]);
+    
+    ASSERT([fm removeItemAtPath:jbroot(@"/private/var") error:nil]);
+    ASSERT([fm createSymbolicLinkAtPath:jbroot(@"/private/var") withDestinationPath:[jbroot_secondary stringByAppendingPathComponent:@"/var"] error:nil]);
+    
+    ASSERT([fm removeItemAtPath:[jbroot_secondary stringByAppendingPathComponent:@"/var/tmp"] error:nil]);
+    ASSERT([fm moveItemAtPath:jbroot(@"/tmp") toPath:[jbroot_secondary stringByAppendingPathComponent:@"/var/tmp"] error:nil]);
+    ASSERT([fm createSymbolicLinkAtPath:jbroot(@"/tmp") withDestinationPath:@"var/tmp" error:nil]);
+    
+    for(NSString* item in [fm contentsOfDirectoryAtPath:jbroot_path error:nil])
+    {
+        if([item isEqualToString:@"var"])
+            continue;
+
+        ASSERT([fm createSymbolicLinkAtPath:[jbroot_secondary stringByAppendingPathComponent:item] withDestinationPath:[jbroot_path stringByAppendingPathComponent:item] error:nil]);
+    }
+    
+    ASSERT([fm removeItemAtPath:[jbroot_secondary stringByAppendingPathComponent:@".jbroot"] error:nil]);
+    ASSERT([fm createSymbolicLinkAtPath:[jbroot_secondary stringByAppendingPathComponent:@".jbroot"]
+                    withDestinationPath:jbroot_path error:nil]);
+    
+    
+    STRAPLOG("Status: Building Base Binaries");
+    ASSERT(rebuildBasebin() == 0);
+    
+    STRAPLOG("Status: Starting Bootstrapd");
+    ASSERT(startBootstrapd() == 0);
+    
+    STRAPLOG("Status: Finalizing Bootstrap");
+    NSString* log=nil;
+    NSString* err=nil;
+    int status = spawnBootstrap((char*[]){"/bin/sh", "/prep_bootstrap.sh", NULL}, &log, &err);
+    if(status != 0) {
+        STRAPLOG("faild(%d):%@\nERR:%@", status, log, err);
+        ABORT();
+    }
+
+    if(![fm fileExistsAtPath:jbroot(@"/var/mobile/Library/Preferences")])
+    {
+        NSDictionary* attr = @{NSFilePosixPermissions:@(0755), NSFileOwnerAccountID:@(501), NSFileGroupOwnerAccountID:@(501)};
+        ASSERT([fm createDirectoryAtPath:jbroot(@"/var/mobile/Library/Preferences") withIntermediateDirectories:YES attributes:attr error:nil]);
+    }
+    
+    ASSERT(buildPackageSources() == 0);
+    
+    
+    STRAPLOG("Status: Installing Packages");
+    NSString* libkrw0_dummy = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"libkrw0-dummy.deb"];
+    ASSERT(spawnBootstrap((char*[]){"/usr/bin/dpkg", "-i", rootfsPrefix(libkrw0_dummy).fileSystemRepresentation, NULL}, nil, nil) == 0);
+    
+    NSString* sileoDeb = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"sileo.deb"];
+    ASSERT(spawnBootstrap((char*[]){"/usr/bin/dpkg", "-i", rootfsPrefix(sileoDeb).fileSystemRepresentation, NULL}, nil, nil) == 0);
+    ASSERT(spawnBootstrap((char*[]){"/usr/bin/uicache", "-p", "/Applications/Sileo.app", NULL}, nil, nil) == 0);
+    
+    ASSERT([[NSString stringWithFormat:@"%d",BOOTSTRAP_VERSION] writeToFile:jbroot(@"/.bootstrapped") atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+    ASSERT([fm copyItemAtPath:jbroot(@"/.bootstrapped") toPath:[jbroot_secondary stringByAppendingPathComponent:@".bootstrapped"] error:nil]);
+    
+    STRAPLOG("Status: Bootstrap Installed");
+    
+    
+    return 0;
+}
+
+int InstallBootstrap_zebra(NSString* jbroot_path)
+{
+    STRAPLOG("install bootstrap...");
+    
+    NSFileManager* fm = NSFileManager.defaultManager;
+    
+    ASSERT(mkdir(jbroot_path.fileSystemRepresentation, 0755) == 0);
+    ASSERT(chown(jbroot_path.fileSystemRepresentation, 0, 0) == 0);
+    
+    NSString* bootstrapZstFile = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:
+                                  [NSString stringWithFormat:@"strapfiles/bootstrap-%d.tar.zst", getCFMajorVersion()]];
+    if(![fm fileExistsAtPath:bootstrapZstFile]) {
+        STRAPLOG("can not find bootstrap file, maybe this version of the app is not for iOS%d", NSProcessInfo.processInfo.operatingSystemVersion.majorVersion);
+        return -1;
+    }
+    
+    NSString* bootstrapTarFile = [NSTemporaryDirectory() stringByAppendingPathComponent:@"bootstrap.tar"];
+    if([fm fileExistsAtPath:bootstrapTarFile])
+        ASSERT([fm removeItemAtPath:bootstrapTarFile error:nil]);
+    
+    ASSERT(decompress_tar_zstd(bootstrapZstFile.fileSystemRepresentation, bootstrapTarFile.fileSystemRepresentation) == 0);
+    
+    NSString* tarPath = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"tar"];
+    ASSERT(spawnRoot(tarPath, @[@"-xpkf", bootstrapTarFile, @"-C", jbroot_path], nil, nil) == 0);
+    
+    STRAPLOG("rebuild boostrap binaries");
+    rebuildSignature(jbroot_path);
+    
+    NSString* jbroot_secondary = [NSString stringWithFormat:@"/var/mobile/Containers/Shared/AppGroup/.jbroot-%016llX", jbrand()];
+    ASSERT(mkdir(jbroot_secondary.fileSystemRepresentation, 0755) == 0);
+    ASSERT(chown(jbroot_secondary.fileSystemRepresentation, 0, 0) == 0);
+    
+    ASSERT([fm moveItemAtPath:jbroot(@"/var") toPath:[jbroot_secondary stringByAppendingPathComponent:@"/var"] error:nil]);
+    ASSERT([fm createSymbolicLinkAtPath:jbroot(@"/var") withDestinationPath:@"private/var" error:nil]);
+    
+    ASSERT([fm removeItemAtPath:jbroot(@"/private/var") error:nil]);
+    ASSERT([fm createSymbolicLinkAtPath:jbroot(@"/private/var") withDestinationPath:[jbroot_secondary stringByAppendingPathComponent:@"/var"] error:nil]);
+    
+    ASSERT([fm removeItemAtPath:[jbroot_secondary stringByAppendingPathComponent:@"/var/tmp"] error:nil]);
+    ASSERT([fm moveItemAtPath:jbroot(@"/tmp") toPath:[jbroot_secondary stringByAppendingPathComponent:@"/var/tmp"] error:nil]);
+    ASSERT([fm createSymbolicLinkAtPath:jbroot(@"/tmp") withDestinationPath:@"var/tmp" error:nil]);
+    
+    for(NSString* item in [fm contentsOfDirectoryAtPath:jbroot_path error:nil])
+    {
+        if([item isEqualToString:@"var"])
+            continue;
+
+        ASSERT([fm createSymbolicLinkAtPath:[jbroot_secondary stringByAppendingPathComponent:item] withDestinationPath:[jbroot_path stringByAppendingPathComponent:item] error:nil]);
+    }
+    
+    ASSERT([fm removeItemAtPath:[jbroot_secondary stringByAppendingPathComponent:@".jbroot"] error:nil]);
+    ASSERT([fm createSymbolicLinkAtPath:[jbroot_secondary stringByAppendingPathComponent:@".jbroot"]
+                    withDestinationPath:jbroot_path error:nil]);
+    
+    
+    STRAPLOG("Status: Building Base Binaries");
+    ASSERT(rebuildBasebin() == 0);
+    
+    STRAPLOG("Status: Starting Bootstrapd");
+    ASSERT(startBootstrapd() == 0);
+    
+    STRAPLOG("Status: Finalizing Bootstrap");
+    NSString* log=nil;
+    NSString* err=nil;
+    int status = spawnBootstrap((char*[]){"/bin/sh", "/prep_bootstrap.sh", NULL}, &log, &err);
+    if(status != 0) {
+        STRAPLOG("faild(%d):%@\nERR:%@", status, log, err);
+        ABORT();
+    }
+
+    if(![fm fileExistsAtPath:jbroot(@"/var/mobile/Library/Preferences")])
+    {
+        NSDictionary* attr = @{NSFilePosixPermissions:@(0755), NSFileOwnerAccountID:@(501), NSFileGroupOwnerAccountID:@(501)};
+        ASSERT([fm createDirectoryAtPath:jbroot(@"/var/mobile/Library/Preferences") withIntermediateDirectories:YES attributes:attr error:nil]);
+    }
+    
+    ASSERT(buildPackageSources() == 0);
+    
+    
+    STRAPLOG("Status: Installing Packages");
+    NSString* libkrw0_dummy = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"libkrw0-dummy.deb"];
+    ASSERT(spawnBootstrap((char*[]){"/usr/bin/dpkg", "-i", rootfsPrefix(libkrw0_dummy).fileSystemRepresentation, NULL}, nil, nil) == 0);
+    
+    NSString* zebraDeb = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"zebra.deb"];
+    ASSERT(spawnBootstrap((char*[]){"/usr/bin/dpkg", "-i", rootfsPrefix(zebraDeb).fileSystemRepresentation, NULL}, nil, nil) == 0);
+    ASSERT(spawnBootstrap((char*[]){"/usr/bin/uicache", "-p", "/Applications/Zebra.app", NULL}, nil, nil) == 0);
+    
+    ASSERT([[NSString stringWithFormat:@"%d",BOOTSTRAP_VERSION] writeToFile:jbroot(@"/.bootstrapped") atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+    ASSERT([fm copyItemAtPath:jbroot(@"/.bootstrapped") toPath:[jbroot_secondary stringByAppendingPathComponent:@".bootstrapped"] error:nil]);
+    
+    STRAPLOG("Status: Bootstrap Installed");
+    
+    
+    return 0;
+}
+
+
+
 int ReRandomizeBootstrap()
 {
     //jbroot() disabled
@@ -363,13 +557,127 @@ int bootstrap()
     return 0;
 }
 
+int bootstrap_sileo()
+{
+    ASSERT(getuid()==0);
+    
+    STRAPLOG("bootstrap...");
+    
+    NSFileManager* fm = NSFileManager.defaultManager;
+    
+    NSString* jbroot_path = find_jbroot();
+    
+    if(!jbroot_path) {
+        STRAPLOG("device is not strapped...");
+        
+        jbroot_path = [NSString stringWithFormat:@"/var/containers/Bundle/Application/.jbroot-%016llX", jbrand_new()];
+        
+        STRAPLOG("bootstrap @ %@", jbroot_path);
+        
+        ASSERT(InstallBootstrap_sileo(jbroot_path) == 0);
+        
+    } else if(![fm fileExistsAtPath:jbroot(@"/.bootstrapped")]) {
+        STRAPLOG("remove unfinished bootstrap %@", jbroot_path);
+        
+        uint64_t prev_jbrand = jbrand();
+        
+        ASSERT([fm removeItemAtPath:jbroot_path error:nil]);
+        
+        NSString* jbroot_secondary = [NSString stringWithFormat:@"/var/mobile/Containers/Shared/AppGroup/.jbroot-%016llX", prev_jbrand];
+        if([fm fileExistsAtPath:jbroot_secondary]) {
+            STRAPLOG("remove unfinished bootstrap %@", jbroot_secondary);
+            ASSERT([fm removeItemAtPath:jbroot_secondary error:nil]);
+        }
+        
+        STRAPLOG("bootstrap @ %@", jbroot_path);
+        
+        ASSERT(InstallBootstrap_sileo(jbroot_path) == 0);
+        
+    } else {
+        STRAPLOG("device is strapped: %@", jbroot_path);
+        
+        STRAPLOG("Status: Rerandomize jbroot");
+        
+        ASSERT(ReRandomizeBootstrap() == 0);
+    }
+    
+    ASSERT(disableRootHideBlacklist()==0);
+    
+    STRAPLOG("Status: Rebuilding Apps");
+    ASSERT(spawnBootstrap((char*[]){"/bin/sh", "/basebin/rebuildapps.sh", NULL}, nil, nil) == 0);
+
+    NSDictionary* bootinfo = @{@"bootsession":getBootSession()};
+    ASSERT([bootinfo writeToFile:jbroot(@"/basebin/.bootinfo.plist") atomically:YES]);
+    
+    STRAPLOG("Status: Bootstrap Successful");
+    
+    return 0;
+}
+
+int bootstrap_zebra()
+{
+    ASSERT(getuid()==0);
+    
+    STRAPLOG("bootstrap...");
+    
+    NSFileManager* fm = NSFileManager.defaultManager;
+    
+    NSString* jbroot_path = find_jbroot();
+    
+    if(!jbroot_path) {
+        STRAPLOG("device is not strapped...");
+        
+        jbroot_path = [NSString stringWithFormat:@"/var/containers/Bundle/Application/.jbroot-%016llX", jbrand_new()];
+        
+        STRAPLOG("bootstrap @ %@", jbroot_path);
+        
+        ASSERT(InstallBootstrap_zebra(jbroot_path) == 0);
+        
+    } else if(![fm fileExistsAtPath:jbroot(@"/.bootstrapped")]) {
+        STRAPLOG("remove unfinished bootstrap %@", jbroot_path);
+        
+        uint64_t prev_jbrand = jbrand();
+        
+        ASSERT([fm removeItemAtPath:jbroot_path error:nil]);
+        
+        NSString* jbroot_secondary = [NSString stringWithFormat:@"/var/mobile/Containers/Shared/AppGroup/.jbroot-%016llX", prev_jbrand];
+        if([fm fileExistsAtPath:jbroot_secondary]) {
+            STRAPLOG("remove unfinished bootstrap %@", jbroot_secondary);
+            ASSERT([fm removeItemAtPath:jbroot_secondary error:nil]);
+        }
+        
+        STRAPLOG("bootstrap @ %@", jbroot_path);
+        
+        ASSERT(InstallBootstrap_zebra(jbroot_path) == 0);
+        
+    } else {
+        STRAPLOG("device is strapped: %@", jbroot_path);
+        
+        STRAPLOG("Status: Rerandomize jbroot");
+        
+        ASSERT(ReRandomizeBootstrap() == 0);
+    }
+    
+    ASSERT(disableRootHideBlacklist()==0);
+    
+    STRAPLOG("Status: Rebuilding Apps");
+    ASSERT(spawnBootstrap((char*[]){"/bin/sh", "/basebin/rebuildapps.sh", NULL}, nil, nil) == 0);
+
+    NSDictionary* bootinfo = @{@"bootsession":getBootSession()};
+    ASSERT([bootinfo writeToFile:jbroot(@"/basebin/.bootinfo.plist") atomically:YES]);
+    
+    STRAPLOG("Status: Bootstrap Successful");
+    
+    return 0;
+}
+
 int unbootstrap()
 {
     STRAPLOG("unbootstrap...");
     
     //try
     spawnRoot(jbroot(@"/basebin/bootstrapd"), @[@"exit"], nil, nil);
-    
+
     //jbroot unavailable now
     
     NSFileManager* fm = NSFileManager.defaultManager;
