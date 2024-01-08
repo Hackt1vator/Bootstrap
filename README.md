@@ -16,6 +16,10 @@ You'll need MacOS to build, as you require Xcode Command Line Tools. If you don'
 
  2. Build `Bootstrap.tipa`
 
+    ```git clone https://github.com/roothide/Bootstrap```
+    
+    ```cd Bootstrap```
+    
     ```make package```
 
  3. Transfer `Bootstrap.tipa` from `./packages/` to your device and install it with TrollStore!
